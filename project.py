@@ -4,10 +4,10 @@ import numpy as np
 import sys
 import time
 import matplotlib.pyplot as plt
-from tensorflow.keras.utils import to_categorical
+import keras_tuner as kt
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.utils.multiclass import unique_labels
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 
 # actions are already labelled
 # we'll need to transform them back later on 
@@ -23,14 +23,16 @@ WIDTH = 96
 HEIGHT = 96
 CHANNELS = 3
 
+augment=False
+
 # preprocessing function
-def preprocess_image(image_path, augment=False):
+def preprocess_image(image_path, augment):
     # load and decode the image
     img = tf.io.read_file(image_path)
     img = tf.image.decode_png(img, channels=CHANNELS)
     img = tf.image.resize(img, (WIDTH, HEIGHT))  
     # without this it runs really badly
-    img = img / 255.0  # normalize to [0, 1]
+    img = img / 255.0  # normalize to [0, 1]from sklearn.utils.class_weight import compute_class_weight
 
     # augmenting slightly improves results
     if augment:
@@ -52,13 +54,13 @@ def get_data(folder):
 
     for label in range(0, len(ACTIONS)):
         for file in os.listdir(folder + f"/{label}/"):
-            files.append(preprocess_image(folder + f"/{label}/{file}", augment=True))
+            files.append(preprocess_image(folder + f"/{label}/{file}", augment=augment))
             labels.append(label)
 
     return np.array(files), np.array(labels) 
 
 # let's do a 3CL network and a 5CL one
-def build_cnn_model(num_classes, num_convolutional_layers):
+def build_cnn_model(num_classes, num_convolutional_layers, num_dense_layers, dense_units, dropout, activation, padding):
     model = tf.keras.models.Sequential([
         tf.keras.layers.Input(shape=(WIDTH, HEIGHT, CHANNELS))
     ])
@@ -67,29 +69,23 @@ def build_cnn_model(num_classes, num_convolutional_layers):
         model.add(
             tf.keras.layers.Conv2D(
                 filters=2**(i+5),   # starts at 32
-                kernel_size=(3, 3), 
-                activation='relu', 
-                padding='valid',
+                kernel_size=(2, 2), 
+                activation=activation,
+                padding=padding,    # valid
             ))
-        model.add(tf.keras.layers.AveragePooling2D((2, 2)))
+        model.add(tf.keras.layers.MaxPooling2D((2, 2)))
     
     # Fully connected layers
     model.add(tf.keras.layers.Flatten())
 
-    model.add(
-        tf.keras.layers.Dense(
-        units=1024,   
-        activation='relu'
-        ))
+    for i in range(num_dense_layers):
+        model.add(tf.keras.layers.Dense(
+            units=dense_units[i],
+        activation=activation))
     
-    model.add(
-        tf.keras.layers.Dense(
-        units=1024,   
-        activation='relu'
-        ))
-    
-    model.add(tf.keras.layers.Dropout(0.8))
-              
+        if i != num_dense_layers:
+            model.add(tf.keras.layers.Dropout(dropout))
+           
     model.add(tf.keras.layers.Dense(num_classes, activation='softmax'))  # best for multi-class classification
     return model
 
@@ -144,6 +140,23 @@ def plot_confusion_matrix(cm, classes, normalize=False, title=None, cmap=plt.cm.
     fig.tight_layout()
     plt.show()
 
+def hyperparameter_search(num_convolutional_layers, activation, padding, optimizer):
+
+  tuner = kt.RandomSearch(
+   lambda hp: build_cnn_model(num_convolutional_layers, activation, padding, hp, optimizer),
+   objective='accuracy',      
+   max_trials=4,             # hyperparameter combinations to try
+   executions_per_trial=2,   # models built per trial
+   directory='hyperparameter_search_' + optimizer.lower(),
+  )
+
+  tuner.search(X_train, y_train, validation_data=(X_val, y_val), epochs=nepochs, batch_size=batch_size)
+  best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+  
+  print(f"Best hyperparameters for {optimizer}: \n {best_hps.values}")
+
+  return tuner.hypermodel.build(best_hps), best_hps.values
+
 # read from file
 argc = len(sys.argv) 
 if argc < 2:
@@ -173,55 +186,100 @@ print(f"Augmentation time = {end_time-start_time}")
 # split in training and validation 
 X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.25, random_state=seed)
 
-#lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-#    initial_learning_rate=5e-4,
-#    decay_steps=1000,
-#    decay_rate=0.96,
-#    staircase=True
-#)
-
-optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, beta_1=0.4, beta_2=0.8)
-#optimizer = tf.keras.optimizers.RMSprop(learning_rate=1e-3)
-#optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4, momentum=5e-2)
+adam = tf.keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.6, beta_2=0.8)
+rmsprop = tf.keras.optimizers.RMSprop(learning_rate=1e-4, momentum=0.8, rho=0.8)
+sgd = tf.keras.optimizers.SGD(learning_rate=1e-3, momentum=0.9)
 
 # Build and compile the model
 num_classes = len(ACTIONS)  
-model = build_cnn_model(num_classes, num_convolutional_layers=3)
-model.compile(optimizer=optimizer, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-model.summary()
+model_adam = build_cnn_model(num_classes, num_convolutional_layers=3, num_dense_layers=2, 
+                             dense_units=[256, 64], dropout=0.5, activation='relu', padding='valid')
+model_adam.compile(optimizer=adam, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+model_adam.summary()
 
-history = []
-nepochs = 15
-batch_size = 256
+model_rmsprop = build_cnn_model(num_classes, num_convolutional_layers=3, num_dense_layers=2, 
+                                dense_units=[256, 64], dropout=0.5, activation='relu', padding='valid')
+model_rmsprop.compile(optimizer=rmsprop, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+model_rmsprop.summary()
 
-start_time = time.time()
-history.append(model.fit(X_train, y_train, batch_size=batch_size, epochs=nepochs, verbose=1, validation_data=(X_val,y_val)))
-end_time = time.time()
-print(f"Training time = {end_time-start_time}")
+model_sgd = build_cnn_model(num_classes, num_convolutional_layers=3, num_dense_layers=2, 
+                            dense_units=[256, 64], dropout=0.5, activation='relu', padding='valid')
+model_sgd.compile(optimizer=sgd, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+model_sgd.summary()
+
+histories = []
+nepochs = 10
+batch_size = 64
+
+start_time_adam = time.time()
+histories.append(model_adam.fit(X_train, y_train, batch_size=batch_size, epochs=nepochs, verbose=1, validation_data=(X_val,y_val)))#, class_weight=class_weight_dict))
+end_time_adam = time.time()
+
+start_time_rmsprop = time.time()
+histories.append(model_rmsprop.fit(X_train, y_train, batch_size=batch_size, epochs=nepochs, verbose=1, validation_data=(X_val,y_val)))#, class_weight=class_weight_dict))
+end_time_rmsprop = time.time()
+
+start_time_sgd = time.time()
+histories.append(model_sgd.fit(X_train, y_train, batch_size=batch_size, epochs=nepochs, verbose=1, validation_data=(X_val,y_val)))#, class_weight=class_weight_dict))
+end_time_sgd = time.time()
+
+titles = ["Adam", "RMSProp", "SGD"]
+
+print(f"Training time Adam = {end_time_adam-start_time_adam}")
+print(f"Training time RMSProp = {end_time_rmsprop-start_time_rmsprop}")
+print(f"Training time SGD = {end_time_sgd-start_time_sgd}")
+
+
+augment_label = "with augmentation"
+if augment == False:
+    augment_label = "without augmentation"
+
 
 # plot all the best models 
-fig = plt.figure(figsize=(8, 6))
-for h in history:
-    plt.plot(h.history['accuracy'], 'r')
-    plt.plot(h.history['val_accuracy'], 'b')
-plt.xticks(np.arange(nepochs))
-plt.ylabel('accuracy')
-plt.xlabel('epoch')
-plt.legend(['train accuracy', 'test accuracy'], loc='upper left')
-plt.suptitle(f'Model accuracy with seed {seed}', fontsize=14)
+fig = plt.figure(figsize=(20, 6))
+for i, h in enumerate(histories):
+ plt.subplot(1,3,i+1)
+ plt.plot(h.history['accuracy'], 'r')
+ plt.plot(h.history['val_accuracy'], 'b')
+ plt.title(titles[i])
+ plt.ylim(0.25, 0.65)
+ plt.ylabel('accuracy')
+ plt.xlabel('epoch')
+ plt.legend(['train mse', 'test mse'], loc='upper left')
+ plt.suptitle(f'Model 1 accuracy with seed {seed} ({augment_label})', fontsize=14)
 plt.show()
 
-#score = model.evaluate(X_test, y_test)
-#print("Test loss: %f" %score[0])
-#print("Test accuracy: %f" %score[1])
+y_pred_adam = np.argmax(model_adam.predict(X_test), axis=1)
+y_pred_rmsprop = np.argmax(model_rmsprop.predict(X_test), axis=1)
+y_pred_sgd = np.argmax(model_sgd.predict(X_test), axis=1)
 
-y_pred = np.argmax(model.predict(X_test), axis=1)
-print(classification_report(y_test, y_pred, target_names=list(ACTIONS.values()), digits=3))
+print(classification_report(y_test, y_pred_adam, target_names=list(ACTIONS.values()), digits=3))
+print(classification_report(y_test, y_pred_rmsprop, target_names=list(ACTIONS.values()), digits=3))
+print(classification_report(y_test, y_pred_sgd, target_names=list(ACTIONS.values()), digits=3))
 
-cm = confusion_matrix(y_test, y_pred, sample_weight=None)
+cm_adam = confusion_matrix(y_test, y_pred_adam)
+cm_rmsprop = confusion_matrix(y_test, y_pred_rmsprop)
+cm_sgd = confusion_matrix(y_test, y_pred_sgd)
 
-plt.rcParams["figure.figsize"] = (6, 6)
-plot_confusion_matrix(cm, classes=list(ACTIONS.values()))
+cm_adam_display = ConfusionMatrixDisplay(confusion_matrix=cm_adam, display_labels=list(ACTIONS.values()))
+cm_rmsprop_display = ConfusionMatrixDisplay(confusion_matrix=cm_rmsprop, display_labels=list(ACTIONS.values()))
+cm_sgd_display = ConfusionMatrixDisplay(confusion_matrix=cm_sgd, display_labels=list(ACTIONS.values()))
+
+fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+cm_adam_display.plot(ax=axes[0], cmap=plt.cm.Blues)
+axes[0].set_title("Adam")
+
+cm_rmsprop_display.plot(ax=axes[1], cmap=plt.cm.Blues)
+axes[1].set_title("RMSProp")
+
+cm_sgd_display.plot(ax=axes[2], cmap=plt.cm.Blues)
+axes[2].set_title("SGD")
+
+plt.suptitle(f'Model 1 confusion matrixes with seed {seed} ({augment_label})', fontsize=14)
+plt.tight_layout()
+plt.show()
 
 # Save the trained model
-model.save("car_control_classifier.h5")
+model_adam.save("car_control_classifier_adam.h5")
+model_rmsprop.save("car_control_classifier_rmsprop.h5")
+model_sgd.save("car_control_classifier_sgd.h5")

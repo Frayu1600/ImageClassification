@@ -41,6 +41,6 @@ print("Environment:", env_name)
 print("Action space:", env.action_space)
 print("Observation space:", env.observation_space)
 
-model = tf.keras.models.load_model("car_control_classifier.h5") # your trained model
+model = tf.keras.models.load_model(sys.argv[1]) # your trained model
 
 play(env, model)
