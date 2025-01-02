@@ -9,6 +9,13 @@ except ModuleNotFoundError:
     print('pip install gymnasium[box2d]')
     sys.exit(1)
 
+# preprocessing function
+def preprocess_image(obs):
+    # load and decode the image
+    img = tf.convert_to_tensor(obs, dtype=tf.float32)
+    img = tf.image.resize(img, (96, 96))  
+    img = img / 255.0  # normalize to [0, 1]
+    return img
 
 def play(env, model):
 
@@ -21,12 +28,16 @@ def play(env, model):
         obs,_,_,_,_ = env.step(action0)
     
     done = False
+    simulation_score = 0
     while not done:
-        p = model.predict(np.expand_dims(obs, axis=0)) # adapt 
-        action = np.argmax(p)  # adapt
-        obs, _, terminated, truncated, _ = env.step(action)
+        preprocessed_obs = np.expand_dims(preprocess_image(obs), axis=0)
+        p = model.predict(preprocessed_obs) 
+        action = np.argmax(p)  
+        obs, reward, terminated, truncated, _ = env.step(action)
+        simulation_score += reward
         done = terminated or truncated
 
+    print(simulation_score)
 
 env_arguments = {
     'domain_randomize': False,
@@ -36,6 +47,7 @@ env_arguments = {
 
 env_name = 'CarRacing-v2'
 env = gym.make(env_name, **env_arguments)
+
 
 print("Environment:", env_name)
 print("Action space:", env.action_space)
