@@ -11,7 +11,6 @@ except ModuleNotFoundError:
 
 # preprocessing function
 def preprocess_image(obs):
-    # load and decode the image
     img = tf.convert_to_tensor(obs, dtype=tf.float32)
     img = tf.image.resize(img, (96, 96))  
     img = img / 255.0  # normalize to [0, 1]
@@ -48,11 +47,10 @@ env_arguments = {
 env_name = 'CarRacing-v2'
 env = gym.make(env_name, **env_arguments)
 
-
 print("Environment:", env_name)
 print("Action space:", env.action_space)
 print("Observation space:", env.observation_space)
 
-model = tf.keras.models.load_model(sys.argv[1]) # your trained model
+model = tf.keras.models.load_model(sys.argv[1]) 
 
 play(env, model)

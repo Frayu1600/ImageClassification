@@ -32,6 +32,7 @@ def preprocess_image(image_path, augment):
     img = tf.image.resize(img, (WIDTH, HEIGHT))  
     img = img / 255.0  # normalize to [0, 1]
 
+    # optional augmentation
     if augment: 
         img = tf.image.random_brightness(img, max_delta=0.1, seed=seed)  
         img = tf.image.random_contrast(img, lower=0.9, upper=1.1, seed=seed)  
@@ -50,7 +51,6 @@ def get_data(folder):
 
     return np.array(files), np.array(labels) 
 
-# let's do a 3CL network and a 5CL one
 def build_cnn_model(num_classes, num_convolutional_layers, num_dense_layers, dense_units, dropout, activation, padding):
     model = tf.keras.models.Sequential([
         tf.keras.layers.Input(shape=(WIDTH, HEIGHT, CHANNELS))
@@ -59,12 +59,12 @@ def build_cnn_model(num_classes, num_convolutional_layers, num_dense_layers, den
     for i in range(num_convolutional_layers):
         model.add(
             tf.keras.layers.Conv2D(
-                filters=2**(i+5),       # era i+5
-                kernel_size=(2, 2),     # era 2,2
+                filters=2**(i+5),       
+                kernel_size=(2, 2),     
                 activation=activation,
-                padding=padding,        # era valid
+                padding=padding,        
             ))
-        model.add(tf.keras.layers.MaxPooling2D((2, 2)))     # era 2,2
+        model.add(tf.keras.layers.MaxPooling2D((2, 2)))     
     
     # Fully connected layers
     model.add(tf.keras.layers.Flatten())
@@ -77,7 +77,7 @@ def build_cnn_model(num_classes, num_convolutional_layers, num_dense_layers, den
         if i != num_dense_layers:
             model.add(tf.keras.layers.Dropout(dropout))
            
-    model.add(tf.keras.layers.Dense(num_classes, activation='softmax'))  # best for multi-class classification
+    model.add(tf.keras.layers.Dense(num_classes, activation='softmax'))  
     return model
 
 def build_optimized_model(hp, optimizer_name, build_model):
@@ -164,10 +164,10 @@ def plot_classification_report():
     plt.tight_layout()
     plt.show()
 
-def plot_confusion_matrixes():
-    cm_adam = confusion_matrix(y_test, y_pred_adam)
-    cm_rmsprop = confusion_matrix(y_test, y_pred_rmsprop)
-    cm_sgd = confusion_matrix(y_test, y_pred_sgd)
+def plot_confusion_matrixes(normalize):
+    cm_adam = confusion_matrix(y_test, y_pred_adam, normalize=normalize)
+    cm_rmsprop = confusion_matrix(y_test, y_pred_rmsprop, normalize=normalize)
+    cm_sgd = confusion_matrix(y_test, y_pred_sgd, normalize=normalize)
 
     cm_adam_display = ConfusionMatrixDisplay(confusion_matrix=cm_adam, display_labels=list(ACTIONS.values()))
     cm_rmsprop_display = ConfusionMatrixDisplay(confusion_matrix=cm_rmsprop, display_labels=list(ACTIONS.values()))
@@ -246,15 +246,7 @@ if model == "model1":
     model_adam.compile(optimizer=adam, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     model_rmsprop.compile(optimizer=rmsprop, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     model_sgd.compile(optimizer=sgd, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-
-    #model_adam, best_parameters_adam = hyperparameter_search("Adam", build_model1)
-    #model_rmsprop, best_parameters_rmsprop = hyperparameter_search("RMSProp", build_model1)
-    #model_sgd, best_parameters_sgd = hyperparameter_search("SGD", build_model1)
 else:
-    #model_adam = build_model2()
-    #model_rmsprop = build_model2()
-    #model_sgd = build_model2()
-
     model_adam, best_parameters_adam = hyperparameter_search("Adam", build_model2)
     model_rmsprop, best_parameters_rmsprop = hyperparameter_search("RMSProp", build_model2)
     model_sgd, best_parameters_sgd = hyperparameter_search("SGD", build_model2)
@@ -305,7 +297,7 @@ y_pred_sgd = np.argmax(model_sgd.predict(X_test), axis=1)
 
 plot_classification_report()
 
-plot_confusion_matrixes()
+plot_confusion_matrixes(normalize="true")
 
 # save each trained model
 model_adam.save(f"car_control_classifier_adam_{aug_file_label}.h5")
